@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+deployment_ready
+preprocessed_output
+reconstructed_audio
+tmp_uploads
+scripts/webjobs/cleanup-job.zip
