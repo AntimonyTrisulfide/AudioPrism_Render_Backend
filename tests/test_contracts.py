@@ -71,6 +71,16 @@ class ApiContractTests(unittest.TestCase):
         self.assertFalse(payload["model_loaded"])
         self.assertEqual(payload["stems"][0], {"name": "Vocal", "label": "Vocals"})
 
+    def test_inference_chunk_is_bounded_for_render(self):
+        self.assertEqual(app.inference_chunk_samples(64000, 16000), 16000)
+        self.assertEqual(app.inference_chunk_samples(8000, 16000), 8000)
+
+    def test_frequency_tiles_cover_the_full_spectrogram(self):
+        starts = app.frequency_tile_starts(1025, 512, 128)
+        self.assertEqual(starts[0], 0)
+        self.assertEqual(starts[-1] + 512, 1025)
+        self.assertTrue(all(right - left <= 384 for left, right in zip(starts, starts[1:])))
+
 
 if __name__ == "__main__":
     unittest.main()

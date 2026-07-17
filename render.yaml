@@ -12,6 +12,12 @@ services:
         value: "25"
       - key: MAX_AUDIO_SECONDS
         value: "0"
+      - key: INFERENCE_CHUNK_SECONDS
+        value: "1.0"
+      - key: INFERENCE_FREQ_TILE_BINS
+        value: "512"
+      - key: INFERENCE_FREQ_OVERLAP_BINS
+        value: "128"
       - key: AUTH_REQUIRED
         value: "1"
       - key: MONGODB_URI

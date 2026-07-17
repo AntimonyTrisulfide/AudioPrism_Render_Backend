@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import ctypes
 import gc
 import hashlib
 import hmac
@@ -131,6 +132,9 @@ MONGO_REQUIRED = _env_bool("MONGO_REQUIRED", False)
 MONGODB_TIMEOUT_MS = _env_int("MONGODB_TIMEOUT_MS", 15000)
 RESULT_PERSIST_REQUIRED = _env_bool("RESULT_PERSIST_REQUIRED", False)
 RAM_LIMIT_MB = _env_int("RAM_LIMIT_MB", 512)
+INFERENCE_CHUNK_SECONDS = _env_float("INFERENCE_CHUNK_SECONDS", 1.0, minimum=0.25)
+INFERENCE_FREQ_TILE_BINS = _env_int("INFERENCE_FREQ_TILE_BINS", 512)
+INFERENCE_FREQ_OVERLAP_BINS = _env_int("INFERENCE_FREQ_OVERLAP_BINS", 128)
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-only-change-me")
 TOKEN_TTL_SECONDS = _env_int("TOKEN_TTL_SECONDS", 60 * 60 * 24 * 7)
 AUTH_REQUIRED = _env_bool("AUTH_REQUIRED", True)
@@ -484,6 +488,39 @@ def extract_state_dict(checkpoint):
     return checkpoint
 
 
+def inference_chunk_samples(trained_chunk_samples: int, sample_rate: int) -> int:
+    requested = int(INFERENCE_CHUNK_SECONDS * sample_rate)
+    return min(trained_chunk_samples, requested) if trained_chunk_samples > 0 else requested
+
+
+def build_unet_from_state(
+    state_dict: dict,
+    in_channels: int,
+    out_channels: int,
+    base_channels: int,
+    bilinear: bool,
+) -> torch.nn.Module:
+    try:
+        with torch.device("meta"):
+            model = UNet(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                base_c=base_channels,
+                bilinear=bilinear,
+            )
+        model.load_state_dict(state_dict, assign=True)
+        return model
+    except TypeError:
+        model = UNet(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            base_c=base_channels,
+            bilinear=bilinear,
+        )
+        model.load_state_dict(state_dict)
+        return model
+
+
 def build_model_runtime() -> ModelRuntime:
     model_path = find_model_path()
     if not model_path:
@@ -501,20 +538,21 @@ def build_model_runtime() -> ModelRuntime:
     sample_rate = int(train_metadata.get("sr", checkpoint_config.get("sample_rate", 16000)))
     n_fft = int(train_metadata.get("n_fft", checkpoint_config.get("n_fft", 2048)))
     hop_length = int(train_metadata.get("hop_length", checkpoint_config.get("hop_length", 512)))
-    chunk_samples = int(train_metadata.get("chunk_samples", int(sample_rate * checkpoint_config.get("chunk_duration", 4.0))))
+    trained_chunk_samples = int(train_metadata.get("chunk_samples", int(sample_rate * checkpoint_config.get("chunk_duration", 4.0))))
+    chunk_samples = inference_chunk_samples(trained_chunk_samples, sample_rate)
     chunk_duration = chunk_samples / sample_rate
     base_channels = int(checkpoint_config.get("base_channels", 64))
     bilinear = bool(checkpoint_config.get("bilinear", False))
     in_channels = int(checkpoint_config.get("in_channels", 1))
 
-    model = UNet(
+    state_dict = extract_state_dict(checkpoint)
+    model = build_unet_from_state(
+        state_dict,
         in_channels=in_channels,
         out_channels=len(source_names),
-        base_c=base_channels,
+        base_channels=base_channels,
         bilinear=bilinear,
     )
-    state_dict = extract_state_dict(checkpoint)
-    model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
 
@@ -550,6 +588,17 @@ def current_rss_mb() -> float | None:
         return None
 
 
+def trim_process_memory() -> None:
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if os.name == "posix":
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except (AttributeError, OSError):
+            pass
+
+
 def get_model_runtime() -> ModelRuntime:
     global _MODEL_RUNTIME
     if _MODEL_RUNTIME is not None:
@@ -558,6 +607,47 @@ def get_model_runtime() -> ModelRuntime:
         if _MODEL_RUNTIME is None:
             _MODEL_RUNTIME = build_model_runtime()
     return _MODEL_RUNTIME
+
+
+def frequency_tile_starts(total_bins: int, tile_bins: int, overlap_bins: int) -> list[int]:
+    if total_bins <= tile_bins:
+        return [0]
+    step = max(1, tile_bins - min(overlap_bins, tile_bins - 1))
+    starts = list(range(0, total_bins - tile_bins + 1, step))
+    final_start = total_bins - tile_bins
+    if starts[-1] != final_start:
+        starts.append(final_start)
+    return starts
+
+
+def predict_masks(model: torch.nn.Module, mix_spec_chunk: torch.Tensor) -> torch.Tensor:
+    total_bins = int(mix_spec_chunk.shape[-2])
+    tile_bins = min(INFERENCE_FREQ_TILE_BINS, total_bins)
+    starts = frequency_tile_starts(total_bins, tile_bins, INFERENCE_FREQ_OVERLAP_BINS)
+    if len(starts) == 1:
+        return torch.sigmoid(model(mix_spec_chunk)).squeeze(0).cpu()
+
+    blended = None
+    weight_sum = torch.zeros((total_bins, 1), dtype=torch.float32)
+    overlap = min(INFERENCE_FREQ_OVERLAP_BINS, tile_bins // 2)
+    for start in starts:
+        end = start + tile_bins
+        prediction = torch.sigmoid(model(mix_spec_chunk[..., start:end, :])).squeeze(0).cpu()
+        if blended is None:
+            blended = torch.zeros(
+                (prediction.shape[0], total_bins, prediction.shape[-1]),
+                dtype=prediction.dtype,
+            )
+        weight = torch.ones((tile_bins, 1), dtype=prediction.dtype)
+        if overlap and start > 0:
+            weight[:overlap] = torch.linspace(0.001, 1.0, overlap).unsqueeze(1)
+        if overlap and end < total_bins:
+            weight[-overlap:] = torch.linspace(1.0, 0.001, overlap).unsqueeze(1)
+        blended[:, start:end, :] += prediction * weight
+        weight_sum[start:end, :] += weight
+        del prediction, weight
+
+    return blended / weight_sum.clamp_min(0.001).unsqueeze(0)
 
 
 def _load_preprocessed_chunk(
@@ -651,7 +741,7 @@ def reconstruct_and_save_audio(
                 mix_spec_chunk = mix_magnitude.unsqueeze(0).unsqueeze(0).to(device)
 
                 with torch.inference_mode():
-                    masks = torch.sigmoid(model(mix_spec_chunk)).squeeze(0).cpu()
+                    masks = predict_masks(model, mix_spec_chunk)
 
                 for writer_index, (src_idx, _source_name) in enumerate(selected_sources):
                     writer = stem_writers[writer_index]
@@ -757,7 +847,7 @@ def inference_pipeline(
                 shutil.rmtree(output_dir_preprocessed, ignore_errors=True)
                 print(f"[Cleanup] Deleted preprocessed folder: {output_dir_preprocessed}")
 
-            gc.collect()
+            trim_process_memory()
 
         except Exception as cleanup_error:
             print(f"[Warning] Cleanup failed: {cleanup_error}")
@@ -1229,6 +1319,8 @@ def healthz():
         "model_type": "UNet",
         "memory_rss_mb": current_rss_mb(),
         "memory_limit_mb": RAM_LIMIT_MB,
+        "inference_chunk_seconds": INFERENCE_CHUNK_SECONDS,
+        "inference_frequency_tile_bins": INFERENCE_FREQ_TILE_BINS,
         "model_path": str(model_path) if model_path else None,
         "max_upload_mb": MAX_UPLOAD_MB,
         "max_audio_seconds": MAX_AUDIO_SECONDS,

@@ -56,6 +56,9 @@ MODEL_FILENAME=model_render.pth
 MODEL_URL=https://optional-url-to/model_render.pth
 MAX_UPLOAD_MB=25
 MAX_AUDIO_SECONDS=0
+INFERENCE_CHUNK_SECONDS=1.0
+INFERENCE_FREQ_TILE_BINS=512
+INFERENCE_FREQ_OVERLAP_BINS=128
 OUTPUT_TTL_MINUTES=120
 ALLOWED_ORIGINS=https://your-frontend.vercel.app
 PUBLIC_BASE_URL=https://your-backend.onrender.com
@@ -76,6 +79,10 @@ used when available. Set it explicitly if returned stem links need a fixed host.
 
 `MAX_AUDIO_SECONDS=0` means no duration cap. The backend still keeps `MAX_UPLOAD_MB`
 because compressed uploads can otherwise blow through Render request and memory limits.
+
+Keep the three `INFERENCE_*` values above on a 512 MB service. They bound the
+time axis and process the original-resolution spectrogram in overlapping
+frequency tiles. Increasing either chunk seconds or tile bins raises peak RAM.
 
 Use the backend-only service-role or `sb_secret_...` key, never the browser
 publishable key. Generated stems are uploaded to Supabase Storage and local WAVs

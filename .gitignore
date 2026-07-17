@@ -42,9 +42,6 @@ app/.env.*
 *.mp3
 *.flac
 
-*.pt
-*.pth
-
 # IDE / OS junk
 .vscode/
 .idea/

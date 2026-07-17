@@ -96,6 +96,13 @@ inference request and reused by the single Uvicorn worker. The inference lock
 prevents concurrent requests from duplicating peak tensor memory on a 512 MB
 Render instance.
 
+`INFERENCE_CHUNK_SECONDS=1.0` bounds UNet activation memory independently of
+uploaded audio duration. Checkpoints are mmap-loaded directly into model
+parameters, and ffmpeg is used as the constant-memory decoder fallback. The
+full-resolution spectrogram is processed in overlapping 512-bin frequency
+tiles and blended back together to keep the trained FFT scale without the
+full-height activation peak.
+
 Set `MONGODB_URI` to keep auth/history durable on Render. Set `SUPABASE_URL`,
 `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_BUCKET` to move generated WAV stems
 out of Render's ephemeral filesystem after each run. Set

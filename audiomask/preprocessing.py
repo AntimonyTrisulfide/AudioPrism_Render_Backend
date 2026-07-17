@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import os
+import subprocess
 from pathlib import Path
 
 import torch
@@ -145,6 +147,43 @@ class ExternalPreprocessor:
             chunk = audio[:, start:end]
             yield index, *self._prepare_chunk(chunk, self.sr)
 
+    def _iter_audio_chunks_from_ffmpeg(self):
+        command = [
+            os.getenv("FFMPEG_BINARY", "ffmpeg"),
+            "-v", "error",
+            "-i", str(self.input_file),
+            "-f", "f32le",
+            "-acodec", "pcm_f32le",
+            "-ac", "1",
+            "-ar", str(self.sr),
+            "pipe:1",
+        ]
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        bytes_per_chunk = self.chunk_samples * 4
+        index = 0
+        try:
+            while process.stdout is not None:
+                data = process.stdout.read(bytes_per_chunk)
+                if not data:
+                    break
+                audio = torch.frombuffer(bytearray(data), dtype=torch.float32).clone().unsqueeze(0)
+                valid_samples = int(audio.shape[1])
+                yield index, *self._prepare_chunk(audio, self.sr, valid_samples)
+                index += 1
+
+            return_code = process.wait()
+            if return_code != 0 or index == 0:
+                error = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
+                raise RuntimeError(f"ffmpeg could not stream this audio file: {error.strip()}")
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+
     def _iter_audio_chunks(self):
         self._validate_duration_before_load()
         try:
@@ -159,7 +198,12 @@ class ExternalPreprocessor:
             except Exception:
                 pass
 
-        yield from self._iter_audio_chunks_from_full_load()
+        try:
+            yield from self._iter_audio_chunks_from_ffmpeg()
+        except (FileNotFoundError, RuntimeError):
+            if os.getenv("ALLOW_FULL_AUDIO_FALLBACK", "0").lower() not in {"1", "true", "yes"}:
+                raise
+            yield from self._iter_audio_chunks_from_full_load()
 
     def _iter_specs_from_file(self):
         for index, chunk, valid_samples in self._iter_audio_chunks():
