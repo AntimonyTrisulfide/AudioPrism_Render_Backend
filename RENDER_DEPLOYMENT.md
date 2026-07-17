@@ -56,10 +56,11 @@ MODEL_FILENAME=model_render.pth
 MODEL_URL=https://optional-url-to/model_render.pth
 MAX_UPLOAD_MB=25
 MAX_AUDIO_SECONDS=0
-INFERENCE_CHUNK_SECONDS=1.0
-INFERENCE_FREQ_TILE_BINS=512
-INFERENCE_FREQ_OVERLAP_BINS=128
+INFERENCE_CHUNK_SECONDS=0.5
+INFERENCE_FREQ_TILE_BINS=256
+INFERENCE_FREQ_OVERLAP_BINS=64
 OUTPUT_TTL_MINUTES=120
+INFERENCE_JOB_TTL_SECONDS=3600
 ALLOWED_ORIGINS=https://your-frontend.vercel.app
 ALLOWED_ORIGIN_REGEX=^https://.*\.vercel\.app$
 PUBLIC_BASE_URL=https://your-backend.onrender.com
@@ -89,6 +90,15 @@ because compressed uploads can otherwise blow through Render request and memory 
 Keep the three `INFERENCE_*` values above on a 512 MB service. They bound the
 time axis and process the original-resolution spectrogram in overlapping
 frequency tiles. Increasing either chunk seconds or tile bins raises peak RAM.
+The frontend uses async inference jobs, so smaller chunks are safer even though
+they can make large files take longer.
+
+If the browser still reports a CORS-looking error with a `502` during processing,
+check the Render logs. That usually means the worker restarted or was killed
+while the background job was running, so FastAPI never got a chance to attach
+CORS headers. On a 512 MB service, the practical fixes are shorter audio,
+a positive `MAX_AUDIO_SECONDS`, smaller `INFERENCE_*` settings, or a larger
+Render instance.
 
 Use the backend-only service-role or `sb_secret_...` key, never the browser
 publishable key. Generated stems are uploaded to Supabase Storage and local WAVs
@@ -110,6 +120,7 @@ GET  /api/stems
 POST /infer
 POST /api/infer
 POST /api/infer/segment
+GET  /api/infer/jobs/{job_id}
 GET  /api/infer/results
 GET  /output/{cache_id}/{stem_file}
 ```

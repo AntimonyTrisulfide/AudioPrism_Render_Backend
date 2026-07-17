@@ -86,6 +86,7 @@ POST /api/auth/login
 GET  /api/auth/me
 GET  /api/stems
 POST /api/infer/segment
+GET  /api/infer/jobs/{job_id}
 GET  /api/infer/results
 ```
 
@@ -96,12 +97,17 @@ inference request and reused by the single Uvicorn worker. The inference lock
 prevents concurrent requests from duplicating peak tensor memory on a 512 MB
 Render instance.
 
-`INFERENCE_CHUNK_SECONDS=1.0` bounds UNet activation memory independently of
+`INFERENCE_CHUNK_SECONDS=0.5` bounds UNet activation memory independently of
 uploaded audio duration. Checkpoints are mmap-loaded directly into model
 parameters, and ffmpeg is used as the constant-memory decoder fallback. The
-full-resolution spectrogram is processed in overlapping 512-bin frequency
+full-resolution spectrogram is processed in overlapping 256-bin frequency
 tiles and blended back together to keep the trained FFT scale without the
 full-height activation peak.
+
+The React frontend submits `async_inference=1`, so `/api/infer/segment` returns
+an inference job quickly and the browser polls `/api/infer/jobs/{job_id}` until
+the stems are ready. This avoids keeping a long Render request open during model
+execution.
 
 For deployed frontends, set `ALLOWED_ORIGINS` to the exact browser origin of the
 frontend, such as `https://your-frontend.vercel.app`. If the frontend uses Vercel

@@ -185,6 +185,9 @@ SUPABASE_PUBLIC_BUCKET = os.getenv("SUPABASE_PUBLIC_BUCKET", "0").lower() in {"1
 SUPABASE_SIGNED_URL_SECONDS = _env_int("SUPABASE_SIGNED_URL_SECONDS", 60 * 60 * 2)
 app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
 _INFERENCE_LOCK = asyncio.Lock()
+INFERENCE_JOB_TTL_SECONDS = _env_int("INFERENCE_JOB_TTL_SECONDS", 60 * 60, minimum=60)
+_INFERENCE_JOBS: dict[str, dict] = {}
+_INFERENCE_JOBS_LOCK = threading.Lock()
 _MODEL_LOCK = threading.Lock()
 _MODEL_RUNTIME = None
 
@@ -1180,6 +1183,173 @@ def list_persisted_results(user: dict | None):
     return list(reversed(results[-50:]))
 
 
+def user_identifier(user: dict | None) -> str | None:
+    return str(user.get("_id") or user.get("id")) if user else None
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def wants_async_inference(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def public_inference_job(job: dict) -> dict:
+    payload = {
+        "jobId": job["id"],
+        "status": job["status"],
+        "cache_id": job.get("cache_id"),
+        "createdAt": job.get("createdAt"),
+        "updatedAt": job.get("updatedAt"),
+        "inputName": job.get("inputName"),
+        "detail": job.get("detail"),
+        "message": job.get("message"),
+        "historySaved": job.get("historySaved"),
+        "files": job.get("files", []),
+        "stems": job.get("stems", []),
+        "selectedStems": job.get("selectedStems", []),
+        "selectedStemLabels": job.get("selectedStemLabels", []),
+    }
+    if job.get("error"):
+        payload["error"] = job["error"]
+    return payload
+
+
+def cleanup_old_jobs() -> None:
+    cutoff = time.time() - INFERENCE_JOB_TTL_SECONDS
+    with _INFERENCE_JOBS_LOCK:
+        for job_id, job in list(_INFERENCE_JOBS.items()):
+            timestamp = float(job.get("updated_ts") or job.get("created_ts") or 0)
+            if timestamp < cutoff:
+                _INFERENCE_JOBS.pop(job_id, None)
+
+
+def create_inference_job(
+    user: dict | None,
+    input_name: str,
+    track_id: str,
+    requested_stems: str | None,
+) -> dict:
+    cleanup_old_jobs()
+    now = utc_now_iso()
+    job = {
+        "id": uuid.uuid4().hex,
+        "ownerId": user_identifier(user),
+        "status": "queued",
+        "cache_id": track_id,
+        "createdAt": now,
+        "updatedAt": now,
+        "created_ts": time.time(),
+        "updated_ts": time.time(),
+        "inputName": input_name,
+        "requestedStemsRaw": requested_stems,
+        "detail": "Upload received. Waiting for the inference worker.",
+        "files": [],
+        "stems": [],
+        "selectedStems": [],
+        "selectedStemLabels": [],
+    }
+    with _INFERENCE_JOBS_LOCK:
+        _INFERENCE_JOBS[job["id"]] = job
+    return job
+
+
+def update_inference_job(job_id: str, **updates) -> None:
+    updates["updatedAt"] = utc_now_iso()
+    updates["updated_ts"] = time.time()
+    with _INFERENCE_JOBS_LOCK:
+        job = _INFERENCE_JOBS.get(job_id)
+        if job is not None:
+            job.update(updates)
+
+
+def get_inference_job(job_id: str) -> dict | None:
+    with _INFERENCE_JOBS_LOCK:
+        job = _INFERENCE_JOBS.get(job_id)
+        return dict(job) if job is not None else None
+
+
+def inference_job_counts() -> dict[str, int]:
+    with _INFERENCE_JOBS_LOCK:
+        counts: dict[str, int] = {}
+        for job in _INFERENCE_JOBS.values():
+            status = str(job.get("status") or "unknown")
+            counts[status] = counts.get(status, 0) + 1
+        return counts
+
+
+async def run_inference_job(
+    job_id: str,
+    temp_input_path: pathlib.Path,
+    track_id: str,
+    public_base_url: str,
+    requested_stems: str | None,
+    user: dict | None,
+    input_name: str,
+) -> None:
+    owner_id = user_identifier(user)
+    try:
+        update_inference_job(job_id, status="running", detail="Loading model and preparing inference.")
+        async with _INFERENCE_LOCK:
+            runtime = await asyncio.to_thread(get_model_runtime)
+            requested_source_names = resolve_requested_sources(runtime.source_names, requested_stems)
+            update_inference_job(
+                job_id,
+                status="running",
+                detail="Separating audio stems.",
+                selectedStems=requested_source_names,
+                selectedStemLabels=[stem_display_name(stem) for stem in requested_source_names],
+            )
+            result = await asyncio.to_thread(
+                inference_pipeline,
+                temp_input_path,
+                runtime,
+                track_id,
+                public_base_url,
+                requested_source_names,
+                owner_id,
+            )
+
+        if result.get("status") == "failed":
+            update_inference_job(
+                job_id,
+                status="failed",
+                detail=result.get("message") or "Audio processing failed.",
+                message=result.get("message"),
+                error=result.get("error"),
+            )
+            return
+
+        history_saved = await asyncio.to_thread(
+            persist_result,
+            user,
+            result,
+            input_name or track_id,
+            result.get("selectedStems") or requested_source_names,
+        )
+        update_inference_job(
+            job_id,
+            status=result.get("status", "success"),
+            detail="Separated stems are ready.",
+            message=result.get("message"),
+            cache_id=result.get("cache_id") or track_id,
+            files=result.get("files", []),
+            stems=result.get("stems", []),
+            historySaved=history_saved,
+        )
+    except Exception as error:
+        traceback.print_exc()
+        temp_input_path.unlink(missing_ok=True)
+        update_inference_job(
+            job_id,
+            status="failed",
+            detail=str(error) or "Audio processing failed.",
+            message=str(error),
+            error=str(error),
+        )
+
+
 _CONTENT_TYPE_EXTENSION_MAP = {
     "audio/mpeg": ".mp3",
     "audio/mp3": ".mp3",
@@ -1278,6 +1448,7 @@ async def infer_audio(
     cache_id: Optional[str] = Form(None),
     stems: Optional[str] = Form(None),
     selected_stems: Optional[str] = Form(None),
+    async_inference: Optional[str] = Form(None),
     authorization: str | None = Header(default=None),
 ):
     print("Received file:", file.filename if file else "No file")
@@ -1302,17 +1473,33 @@ async def infer_audio(
     file_size = await write_upload_to_disk(file, temp_input_path)
     print("File size:", file_size, "bytes")
 
+    requested_stems_raw = selected_stems or stems
+    if wants_async_inference(async_inference):
+        job = create_inference_job(user, file.filename or track_id, track_id, requested_stems_raw)
+        asyncio.create_task(
+            run_inference_job(
+                job["id"],
+                temp_input_path,
+                track_id,
+                public_base_url,
+                requested_stems_raw,
+                user,
+                file.filename or track_id,
+            )
+        )
+        return JSONResponse(public_inference_job(job), status_code=202)
+
     async with _INFERENCE_LOCK:
         try:
             runtime = get_model_runtime()
-            requested_source_names = resolve_requested_sources(runtime.source_names, selected_stems or stems)
+            requested_source_names = resolve_requested_sources(runtime.source_names, requested_stems_raw)
             result = inference_pipeline(
                 temp_input_path,
                 runtime,
                 track_id,
                 public_base_url,
                 requested_source_names=requested_source_names,
-                owner_id=str(user.get("_id") or user.get("id")) if user else None,
+                owner_id=user_identifier(user),
             )
         except Exception:
             temp_input_path.unlink(missing_ok=True)
@@ -1321,6 +1508,16 @@ async def infer_audio(
         return JSONResponse(result, status_code=400)
     result["historySaved"] = persist_result(user, result, file.filename or track_id, requested_source_names)
     return JSONResponse(result)
+
+
+@app.get("/api/infer/jobs/{job_id}")
+def infer_job(job_id: str, authorization: str | None = Header(default=None)):
+    user = current_user_from_authorization(authorization, required=AUTH_REQUIRED)
+    cleanup_old_jobs()
+    job = get_inference_job(job_id)
+    if job is None or job.get("ownerId") != user_identifier(user):
+        raise HTTPException(status_code=404, detail="Inference job was not found.")
+    return public_inference_job(job)
 
 
 @app.get("/api/infer/results")
@@ -1359,11 +1556,14 @@ def healthz():
         "memory_limit_mb": RAM_LIMIT_MB,
         "inference_chunk_seconds": INFERENCE_CHUNK_SECONDS,
         "inference_frequency_tile_bins": INFERENCE_FREQ_TILE_BINS,
+        "inference_frequency_overlap_bins": INFERENCE_FREQ_OVERLAP_BINS,
         "model_path": str(model_path) if model_path else None,
         "max_upload_mb": MAX_UPLOAD_MB,
         "max_audio_seconds": MAX_AUDIO_SECONDS,
         "duration_cap_enabled": MAX_AUDIO_SECONDS > 0,
         "output_ttl_minutes": OUTPUT_TTL_MINUTES,
+        "inference_job_ttl_seconds": INFERENCE_JOB_TTL_SECONDS,
+        "inference_jobs": inference_job_counts(),
         "auth_required": AUTH_REQUIRED,
         "mongo_required": MONGO_REQUIRED,
         "mongo_enabled": _MONGO_DB is not None,
