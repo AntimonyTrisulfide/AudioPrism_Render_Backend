@@ -38,7 +38,11 @@ services:
         value: audioprism-stems
       - key: SUPABASE_PUBLIC_BUCKET
         value: "0"
+      - key: PUBLIC_BASE_URL
+        sync: false
       - key: ALLOWED_ORIGINS
+        sync: false
+      - key: ALLOWED_ORIGIN_REGEX
         sync: false
       - key: OUTPUT_TTL_MINUTES
         value: "120"

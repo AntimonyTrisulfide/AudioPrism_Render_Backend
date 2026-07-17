@@ -61,6 +61,7 @@ INFERENCE_FREQ_TILE_BINS=512
 INFERENCE_FREQ_OVERLAP_BINS=128
 OUTPUT_TTL_MINUTES=120
 ALLOWED_ORIGINS=https://your-frontend.vercel.app
+ALLOWED_ORIGIN_REGEX=^https://.*\.vercel\.app$
 PUBLIC_BASE_URL=https://your-backend.onrender.com
 AUTH_REQUIRED=1
 MONGODB_URI=mongodb+srv://...
@@ -73,6 +74,11 @@ SUPABASE_SERVICE_ROLE_KEY=...
 SUPABASE_BUCKET=audioprism-stems
 SUPABASE_PUBLIC_BUCKET=0
 ```
+
+`ALLOWED_ORIGINS` must include the deployed frontend origin, for example the
+Vercel URL shown in the browser address bar. The app normalizes trailing slashes,
+but do not include paths. Use `ALLOWED_ORIGIN_REGEX` only if you also need branch
+or preview deployment URLs.
 
 `PUBLIC_BASE_URL` is optional on Render because `RENDER_EXTERNAL_URL` is also
 used when available. Set it explicitly if returned stem links need a fixed host.

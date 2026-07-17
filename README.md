@@ -103,6 +103,10 @@ full-resolution spectrogram is processed in overlapping 512-bin frequency
 tiles and blended back together to keep the trained FFT scale without the
 full-height activation peak.
 
+For deployed frontends, set `ALLOWED_ORIGINS` to the exact browser origin of the
+frontend, such as `https://your-frontend.vercel.app`. If the frontend uses Vercel
+preview URLs, add `ALLOWED_ORIGIN_REGEX` for those hosts.
+
 Set `MONGODB_URI` to keep auth/history durable on Render. Set `SUPABASE_URL`,
 `SUPABASE_SERVICE_ROLE_KEY`, and `SUPABASE_BUCKET` to move generated WAV stems
 out of Render's ephemeral filesystem after each run. Set

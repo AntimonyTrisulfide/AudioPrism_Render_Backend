@@ -65,6 +65,13 @@ class ApiContractTests(unittest.TestCase):
         body = request.call_args.kwargs["body"]
         self.assertEqual(json.loads(body), {"id": "stems", "name": "stems", "public": False})
 
+    def test_cors_origins_are_normalized_for_browser_origin_headers(self):
+        origins = app.parse_allowed_origins(
+            "https://audioprism.vercel.app/, https://preview.vercel.app/path"
+        )
+        self.assertEqual(origins, ["https://audioprism.vercel.app", "https://preview.vercel.app"])
+        self.assertEqual(app.parse_allowed_origins("*"), ["*"])
+
     def test_stem_catalog_uses_final_unet_outputs(self):
         with patch.object(app, "find_model_path", return_value=pathlib.Path("model_render.pth")):
             payload = app.available_stems()

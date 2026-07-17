@@ -89,6 +89,30 @@ try:
 except RuntimeError:
     pass
 
+
+def normalize_cors_origin(origin: str) -> str:
+    cleaned = origin.strip()
+    if not cleaned or cleaned == "*":
+        return cleaned
+    parsed = urlparse(cleaned)
+    if parsed.scheme and parsed.netloc:
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return cleaned.rstrip("/")
+
+
+def parse_allowed_origins(raw_origins: str | None) -> list[str]:
+    origins: list[str] = []
+    for raw_origin in (raw_origins or "").split(","):
+        origin = normalize_cors_origin(raw_origin)
+        if not origin:
+            continue
+        if origin == "*":
+            return ["*"]
+        if origin not in origins:
+            origins.append(origin)
+    return origins
+
+
 app = FastAPI()
 
 default_allowed_origins = [
@@ -98,19 +122,33 @@ default_allowed_origins = [
     "http://localhost:5000",
 ]
 
-extra_origins = os.getenv("ALLOWED_ORIGINS")
-if extra_origins:
-    parsed = [origin.strip() for origin in extra_origins.split(",") if origin.strip()]
-    allowed_origins = parsed if parsed else default_allowed_origins
-else:
-    allowed_origins = default_allowed_origins
+configured_origins = parse_allowed_origins(os.getenv("ALLOWED_ORIGINS"))
+frontend_origins = parse_allowed_origins(
+    ",".join(
+        origin
+        for origin in [
+            os.getenv("FRONTEND_URL"),
+            os.getenv("FRONTEND_ORIGIN"),
+            os.getenv("FRONTEND_HOST"),
+        ]
+        if origin
+    )
+)
+allowed_origins = configured_origins or list(default_allowed_origins)
+if allowed_origins != ["*"]:
+    for origin in frontend_origins:
+        if origin not in allowed_origins:
+            allowed_origins.append(origin)
+allowed_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX") or os.getenv("CORS_ALLOW_ORIGIN_REGEX") or None
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=allowed_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Accept-Ranges", "Content-Length", "Content-Range"],
 )
 
 OUTPUT_DIR = pathlib.Path(os.getenv("OUTPUT_DIR", "reconstructed_audio"))
@@ -1332,6 +1370,8 @@ def healthz():
         "mongodb_timeout_ms": MONGODB_TIMEOUT_MS,
         "result_persist_required": RESULT_PERSIST_REQUIRED,
         "auth_store": "mongodb" if _MONGO_DB is not None else "local_json_dev_fallback",
+        "cors_allowed_origins": allowed_origins,
+        "cors_allowed_origin_regex": allowed_origin_regex,
         "storage_backend": "supabase" if supabase_enabled else "local",
         "supabase_enabled": supabase_enabled,
         "supabase_config_error": supabase_error if not supabase_enabled else None,
