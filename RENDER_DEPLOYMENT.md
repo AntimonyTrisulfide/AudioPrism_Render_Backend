@@ -59,6 +59,7 @@ MAX_AUDIO_SECONDS=0
 INFERENCE_CHUNK_SECONDS=0.5
 INFERENCE_FREQ_TILE_BINS=256
 INFERENCE_FREQ_OVERLAP_BINS=64
+INFERENCE_AUTOTUNE_FOR_RAM=1
 OUTPUT_TTL_MINUTES=120
 INFERENCE_JOB_TTL_SECONDS=3600
 ALLOWED_ORIGINS=https://your-frontend.vercel.app
@@ -91,7 +92,9 @@ Keep the three `INFERENCE_*` values above on a 512 MB service. They bound the
 time axis and process the original-resolution spectrogram in overlapping
 frequency tiles. Increasing either chunk seconds or tile bins raises peak RAM.
 The frontend uses async inference jobs, so smaller chunks are safer even though
-they can make large files take longer.
+they can make large files take longer. With `INFERENCE_AUTOTUNE_FOR_RAM=1`, the
+app clamps stale/heavier env values back to the 512 MB-safe settings whenever
+`RAM_LIMIT_MB <= 512`.
 
 If the browser still reports a CORS-looking error with a `502` during processing,
 check the Render logs. That usually means the worker restarted or was killed

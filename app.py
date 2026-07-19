@@ -173,6 +173,11 @@ RAM_LIMIT_MB = _env_int("RAM_LIMIT_MB", 512)
 INFERENCE_CHUNK_SECONDS = _env_float("INFERENCE_CHUNK_SECONDS", 1.0, minimum=0.25)
 INFERENCE_FREQ_TILE_BINS = _env_int("INFERENCE_FREQ_TILE_BINS", 512)
 INFERENCE_FREQ_OVERLAP_BINS = _env_int("INFERENCE_FREQ_OVERLAP_BINS", 128)
+INFERENCE_AUTOTUNE_FOR_RAM = _env_bool("INFERENCE_AUTOTUNE_FOR_RAM", True)
+if INFERENCE_AUTOTUNE_FOR_RAM and RAM_LIMIT_MB <= 512:
+    INFERENCE_CHUNK_SECONDS = min(INFERENCE_CHUNK_SECONDS, 0.5)
+    INFERENCE_FREQ_TILE_BINS = min(INFERENCE_FREQ_TILE_BINS, 256)
+    INFERENCE_FREQ_OVERLAP_BINS = min(INFERENCE_FREQ_OVERLAP_BINS, 64)
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-only-change-me")
 TOKEN_TTL_SECONDS = _env_int("TOKEN_TTL_SECONDS", 60 * 60 * 24 * 7)
 AUTH_REQUIRED = _env_bool("AUTH_REQUIRED", True)
@@ -1554,6 +1559,7 @@ def healthz():
         "model_type": "UNet",
         "memory_rss_mb": current_rss_mb(),
         "memory_limit_mb": RAM_LIMIT_MB,
+        "inference_autotune_for_ram": INFERENCE_AUTOTUNE_FOR_RAM,
         "inference_chunk_seconds": INFERENCE_CHUNK_SECONDS,
         "inference_frequency_tile_bins": INFERENCE_FREQ_TILE_BINS,
         "inference_frequency_overlap_bins": INFERENCE_FREQ_OVERLAP_BINS,

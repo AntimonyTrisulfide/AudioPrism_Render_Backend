@@ -18,6 +18,8 @@ services:
         value: "256"
       - key: INFERENCE_FREQ_OVERLAP_BINS
         value: "64"
+      - key: INFERENCE_AUTOTUNE_FOR_RAM
+        value: "1"
       - key: AUTH_REQUIRED
         value: "1"
       - key: MONGODB_URI
