@@ -104,6 +104,10 @@ full-resolution spectrogram is processed in overlapping 256-bin frequency
 tiles and blended back together to keep the trained FFT scale without the
 full-height activation peak.
 
+Use `MAX_AUDIO_SECONDS=60` on 512 MB deployments. The preprocessor rejects longer
+audio before model inference starts, and `MAX_AUDIO_SECONDS_AUTOTUNE_FOR_RAM=1`
+keeps stale unlimited env values from slipping through on tiny instances.
+
 The React frontend submits `async_inference=1`, so `/api/infer/segment` returns
 an inference job quickly and the browser polls `/api/infer/jobs/{job_id}` until
 the stems are ready. This avoids keeping a long Render request open during model

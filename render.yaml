@@ -11,7 +11,9 @@ services:
       - key: MAX_UPLOAD_MB
         value: "25"
       - key: MAX_AUDIO_SECONDS
-        value: "0"
+        value: "60"
+      - key: MAX_AUDIO_SECONDS_AUTOTUNE_FOR_RAM
+        value: "1"
       - key: INFERENCE_CHUNK_SECONDS
         value: "0.5"
       - key: INFERENCE_FREQ_TILE_BINS

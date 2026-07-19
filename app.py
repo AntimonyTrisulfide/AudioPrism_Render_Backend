@@ -170,6 +170,9 @@ MONGO_REQUIRED = _env_bool("MONGO_REQUIRED", False)
 MONGODB_TIMEOUT_MS = _env_int("MONGODB_TIMEOUT_MS", 15000)
 RESULT_PERSIST_REQUIRED = _env_bool("RESULT_PERSIST_REQUIRED", False)
 RAM_LIMIT_MB = _env_int("RAM_LIMIT_MB", 512)
+MAX_AUDIO_SECONDS_AUTOTUNE_FOR_RAM = _env_bool("MAX_AUDIO_SECONDS_AUTOTUNE_FOR_RAM", True)
+if MAX_AUDIO_SECONDS_AUTOTUNE_FOR_RAM and RAM_LIMIT_MB <= 512 and MAX_AUDIO_SECONDS <= 0:
+    MAX_AUDIO_SECONDS = 60.0
 INFERENCE_CHUNK_SECONDS = _env_float("INFERENCE_CHUNK_SECONDS", 1.0, minimum=0.25)
 INFERENCE_FREQ_TILE_BINS = _env_int("INFERENCE_FREQ_TILE_BINS", 512)
 INFERENCE_FREQ_OVERLAP_BINS = _env_int("INFERENCE_FREQ_OVERLAP_BINS", 128)
@@ -1642,6 +1645,7 @@ def healthz():
         "model_path": str(model_path) if model_path else None,
         "max_upload_mb": MAX_UPLOAD_MB,
         "max_audio_seconds": MAX_AUDIO_SECONDS,
+        "max_audio_seconds_autotune_for_ram": MAX_AUDIO_SECONDS_AUTOTUNE_FOR_RAM,
         "duration_cap_enabled": MAX_AUDIO_SECONDS > 0,
         "output_ttl_minutes": OUTPUT_TTL_MINUTES,
         "inference_job_ttl_seconds": INFERENCE_JOB_TTL_SECONDS,

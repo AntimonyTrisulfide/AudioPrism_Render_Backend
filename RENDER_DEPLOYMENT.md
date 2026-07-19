@@ -55,7 +55,8 @@ Important environment variables:
 MODEL_FILENAME=model_render.pth
 MODEL_URL=https://optional-url-to/model_render.pth
 MAX_UPLOAD_MB=25
-MAX_AUDIO_SECONDS=0
+MAX_AUDIO_SECONDS=60
+MAX_AUDIO_SECONDS_AUTOTUNE_FOR_RAM=1
 INFERENCE_CHUNK_SECONDS=0.5
 INFERENCE_FREQ_TILE_BINS=256
 INFERENCE_FREQ_OVERLAP_BINS=64
@@ -85,8 +86,11 @@ or preview deployment URLs.
 `PUBLIC_BASE_URL` is optional on Render because `RENDER_EXTERNAL_URL` is also
 used when available. Set it explicitly if returned stem links need a fixed host.
 
-`MAX_AUDIO_SECONDS=0` means no duration cap. The backend still keeps `MAX_UPLOAD_MB`
-because compressed uploads can otherwise blow through Render request and memory limits.
+`MAX_AUDIO_SECONDS=60` keeps 512 MB deployments away from song-length jobs. Set
+it higher only after increasing the Render instance size. The backend still keeps
+`MAX_UPLOAD_MB` because compressed uploads can otherwise blow through Render
+request and memory limits. With `MAX_AUDIO_SECONDS_AUTOTUNE_FOR_RAM=1`, stale
+unlimited values are clamped to 60 seconds whenever `RAM_LIMIT_MB <= 512`.
 
 Keep the three `INFERENCE_*` values above on a 512 MB service. They bound the
 time axis and process the original-resolution spectrogram in overlapping
