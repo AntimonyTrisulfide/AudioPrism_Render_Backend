@@ -732,6 +732,7 @@ def reconstruct_and_save_audio(
     public_base_url: str = "",
     requested_source_names: list[str] | None = None,
     owner_id: str | None = None,
+    progress_callback=None,
 ):
     import soundfile as sf
     import torchaudio.transforms as T
@@ -756,6 +757,14 @@ def reconstruct_and_save_audio(
             n_chunks = int(fallback_data["spectrogram"].shape[0])
 
         selected_source_names = requested_source_names or list(dataset.all_source_names)
+        if progress_callback:
+            progress_callback(
+                20,
+                "Separating stems",
+                f"Starting reconstruction for {len(selected_source_names)} stem(s) across {n_chunks} audio chunk(s).",
+                chunksDone=0,
+                totalChunks=n_chunks,
+            )
         selected_sources = [
             (dataset.all_source_names.index(source_name), source_name)
             for source_name in selected_source_names
@@ -804,10 +813,26 @@ def reconstruct_and_save_audio(
                 del mix_magnitude, phase, mix_spec_chunk, masks
                 if chunk_idx % 4 == 0:
                     gc.collect()
+                if progress_callback and (
+                    chunk_idx == 0
+                    or chunk_idx + 1 == n_chunks
+                    or (chunk_idx + 1) % max(1, n_chunks // 20) == 0
+                ):
+                    completed = chunk_idx + 1
+                    percent = 20 + (completed / max(1, n_chunks)) * 62
+                    progress_callback(
+                        percent,
+                        "Separating stems",
+                        f"Reconstructed chunk {completed} of {n_chunks}.",
+                        chunksDone=completed,
+                        totalChunks=n_chunks,
+                    )
         finally:
             for writer in stem_writers:
                 writer.close()
 
+        if progress_callback:
+            progress_callback(84, "Uploading stems", f"Uploading {len(stem_outputs)} stem file(s).")
         for source_name, save_path in stem_outputs:
             if storage_is_supabase_enabled():
                 owner_path = quote(owner_id or "anonymous", safe="")
@@ -825,6 +850,8 @@ def reconstruct_and_save_audio(
                 "storageKey": object_path,
             })
 
+        if progress_callback:
+            progress_callback(94, "Finalizing", f"Prepared {len(current_track_stems)} stem link(s).")
         track_payloads.append({"cache_id": track_name, "stems": current_track_stems})
 
     primary_track = track_payloads[0] if track_payloads else {"cache_id": None, "stems": []}
@@ -843,11 +870,14 @@ def inference_pipeline(
     public_base_url: str,
     requested_source_names: list[str] | None = None,
     owner_id: str | None = None,
+    progress_callback=None,
 ):
     output_dir_preprocessed = pathlib.Path("preprocessed_output") / track_id
     output_dir_preprocessed.mkdir(parents=True, exist_ok=True)
 
     try:
+        if progress_callback:
+            progress_callback(8, "Preprocessing audio", "Streaming the uploaded audio into model chunks.")
         preprocessor = ExternalPreprocessor(
             temp_input_path,
             output_dir_preprocessed,
@@ -865,6 +895,8 @@ def inference_pipeline(
                 shutil.rmtree(desired_dir, ignore_errors=True)
             track_output_dir.rename(desired_dir)
 
+        if progress_callback:
+            progress_callback(16, "Loading chunks", "Audio preprocessing finished; loading chunk metadata.")
         gc.collect()
         dataset = ExternalPreprocessedDataset(output_dir_preprocessed, runtime.source_names)
         result = reconstruct_and_save_audio(
@@ -875,6 +907,7 @@ def inference_pipeline(
             public_base_url=public_base_url,
             requested_source_names=requested_source_names,
             owner_id=owner_id,
+            progress_callback=progress_callback,
         )
         result["cache_id"] = track_id
         return result
@@ -1213,6 +1246,7 @@ def public_inference_job(job: dict) -> dict:
         "historySaved": job.get("historySaved"),
         "files": job.get("files", []),
         "stems": job.get("stems", []),
+        "progress": job.get("progress"),
         "selectedStems": job.get("selectedStems", []),
         "selectedStemLabels": job.get("selectedStemLabels", []),
     }
@@ -1269,6 +1303,23 @@ def update_inference_job(job_id: str, **updates) -> None:
             job.update(updates)
 
 
+def update_inference_job_progress(
+    job_id: str,
+    percent: float,
+    label: str,
+    detail: str,
+    **extra,
+) -> None:
+    progress = {
+        "percent": round(max(0.0, min(100.0, percent)), 1),
+        "label": label,
+        "detail": detail,
+        **extra,
+    }
+    print(f"[Job {job_id[:8]}] {progress['percent']}% {label}: {detail}", flush=True)
+    update_inference_job(job_id, detail=detail, progress=progress)
+
+
 def get_inference_job(job_id: str) -> dict | None:
     with _INFERENCE_JOBS_LOCK:
         job = _INFERENCE_JOBS.get(job_id)
@@ -1296,6 +1347,7 @@ async def run_inference_job(
     owner_id = user_identifier(user)
     try:
         update_inference_job(job_id, status="running", detail="Loading model and preparing inference.")
+        update_inference_job_progress(job_id, 4, "Loading model", "Loading model and preparing inference.")
         async with _INFERENCE_LOCK:
             runtime = await asyncio.to_thread(get_model_runtime)
             requested_source_names = resolve_requested_sources(runtime.source_names, requested_stems)
@@ -1306,6 +1358,16 @@ async def run_inference_job(
                 selectedStems=requested_source_names,
                 selectedStemLabels=[stem_display_name(stem) for stem in requested_source_names],
             )
+            update_inference_job_progress(
+                job_id,
+                6,
+                "Starting inference",
+                f"Selected {len(requested_source_names)} stem(s): {', '.join(requested_source_names)}.",
+            )
+
+            def progress_callback(percent, label, detail, **extra):
+                update_inference_job_progress(job_id, percent, label, detail, **extra)
+
             result = await asyncio.to_thread(
                 inference_pipeline,
                 temp_input_path,
@@ -1314,6 +1376,7 @@ async def run_inference_job(
                 public_base_url,
                 requested_source_names,
                 owner_id,
+                progress_callback,
             )
 
         if result.get("status") == "failed":
@@ -1326,6 +1389,18 @@ async def run_inference_job(
             )
             return
 
+        if not result.get("stems"):
+            update_inference_job(
+                job_id,
+                status="failed",
+                detail="Audio processing finished, but no stem files were produced.",
+                message="Audio processing finished, but no stem files were produced.",
+                error="empty_stems",
+            )
+            print(f"[Job {job_id[:8]}] failed: no stems produced", flush=True)
+            return
+
+        update_inference_job_progress(job_id, 96, "Saving history", "Saving result metadata.")
         history_saved = await asyncio.to_thread(
             persist_result,
             user,
@@ -1343,6 +1418,7 @@ async def run_inference_job(
             stems=result.get("stems", []),
             historySaved=history_saved,
         )
+        print(f"[Job {job_id[:8]}] success: {len(result.get('stems', []))} stem(s) ready", flush=True)
     except Exception as error:
         traceback.print_exc()
         temp_input_path.unlink(missing_ok=True)
